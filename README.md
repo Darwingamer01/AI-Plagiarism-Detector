@@ -150,5 +150,4 @@ This system detects **semantic similarity** for educational and research purpose
 
 ---
 
-**🎉 Ready for flawless live demonstration!**  
-**Developed with production-grade practices and ChatGPT audit compliance.**
+
