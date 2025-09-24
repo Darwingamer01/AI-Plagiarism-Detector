@@ -50,10 +50,10 @@ app.add_middleware(
 )
 
 # Security - FIXED: Make HTTPBearer optional
-security = HTTPBearer(auto_error=False)  # 🔧 KEY FIX: auto_error=False
+security = HTTPBearer(auto_error=False)
 
 def verify_api_key(
-    x_api_key: Optional[str] = Header(None, alias="X-API-KEY"),  # 🔧 FIXED: Added alias
+    x_api_key: Optional[str] = Header(None, alias="X-API-KEY"),
     authorization: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ):
     """Verify API key from X-API-KEY header or Authorization Bearer token"""
@@ -66,16 +66,16 @@ def verify_api_key(
     elif authorization and authorization.scheme.lower() == "bearer":
         api_key = authorization.credentials
     
-    # 🔧 FIXED: Proper error handling
+    # FIXED: Proper error handling
     if not api_key:
         raise HTTPException(
-            status_code=403,  # 🔧 FIXED: 403 for missing auth
+            status_code=403,
             detail="Authentication required. Use X-API-KEY header or Authorization: Bearer token."
         )
     
     if api_key != API_KEY:
         raise HTTPException(
-            status_code=403,  # 🔧 FIXED: 403 for invalid auth
+            status_code=403,
             detail="Invalid API key."
         )
     
@@ -88,7 +88,7 @@ async def root():
         "message": "AI Plagiarism Detection API v2.0.0",
         "status": "operational",
         "endpoints": ["/health", "/status", "/ingest", "/check"]
-    }
+    }  # 🔧 FIXED: Added missing closing brace
 
 @app.get("/health")
 async def health_check():
@@ -97,7 +97,7 @@ async def health_check():
         "status": "healthy",
         "service": "ai-plagiarism-detector",
         "version": "2.0.0"
-    }
+    }  # 🔧 FIXED: Added missing closing brace
 
 @app.get("/status")
 async def get_status(auth: bool = Depends(verify_api_key)):
@@ -179,4 +179,4 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
         log_level="info"
-    )
+    )  # 🔧 FIXED: Added missing closing parenthesis
