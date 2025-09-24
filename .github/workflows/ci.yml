@@ -73,11 +73,25 @@ jobs:
         try:
             from apps.backend.main import app
             print('✅ FastAPI app imports successfully')
-            from apps.backend.processor import PlagiarismProcessor
-            print('✅ PlagiarismProcessor imports successfully')
-            print('All critical imports working!')
+            from apps.backend.processor import DocumentProcessor
+            print('✅ DocumentProcessor imports successfully')
+            
+            # Test processor initialization
+            processor = DocumentProcessor()
+            print('✅ DocumentProcessor initializes successfully')
+            
+            # Test key methods exist
+            assert hasattr(processor, 'get_status'), 'get_status method missing'
+            assert hasattr(processor, 'ingest'), 'ingest method missing'  
+            assert hasattr(processor, 'check'), 'check method missing'
+            print('✅ All required methods present')
+            
+            print('🎉 All critical imports and methods working!')
         except ImportError as e:
             print(f'❌ Import error: {e}')
+            exit(1)
+        except Exception as e:
+            print(f'❌ Initialization error: {e}')
             exit(1)
         "
 
