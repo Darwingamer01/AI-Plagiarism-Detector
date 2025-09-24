@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from apps.backend.processor import DocumentProcessor
 
 # Configuration
-API_KEY = os.getenv("API_KEY", "demo-secret")
+API_KEY = os.getenv("API_KEY") or "demo-secret"
 ALLOW_ORIGINS = os.getenv("ALLOW_ORIGINS", "http://localhost:8501,http://127.0.0.1:8501").split(",")
 
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 # Global processor instance
 processor = None
+
+def _ensure_processor_initialized():
+    """Lazy initialize the global processor if lifespan/startup didn't run."""
+    global processor
+    if processor is None:
+        logger.info("Processor not initialized via lifespan; initializing lazily.")
+        processor = DocumentProcessor()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,7 +56,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Security - FIXED: Make HTTPBearer optional
+# Security - Make HTTPBearer optional
 security = HTTPBearer(auto_error=False)
 
 def verify_api_key(
@@ -66,17 +73,18 @@ def verify_api_key(
     elif authorization and authorization.scheme.lower() == "bearer":
         api_key = authorization.credentials
     
-    # FIXED: Proper error handling
     if not api_key:
+        # Tests expect a 403 Forbidden for bad/missing API keys - return 403
         raise HTTPException(
             status_code=403,
-            detail="Authentication required. Use X-API-KEY header or Authorization: Bearer token."
+            detail="Forbidden: invalid or missing API key. Provide X-API-KEY or Authorization: Bearer <key>."
         )
     
     if api_key != API_KEY:
+        # Tests expect a 403 Forbidden for bad/missing API keys - return 403
         raise HTTPException(
             status_code=403,
-            detail="Invalid API key."
+            detail="Forbidden: invalid or missing API key. Provide X-API-KEY or Authorization: Bearer <key>."
         )
     
     return True
@@ -88,7 +96,7 @@ async def root():
         "message": "AI Plagiarism Detection API v2.0.0",
         "status": "operational",
         "endpoints": ["/health", "/status", "/ingest", "/check"]
-    }  # 🔧 FIXED: Added missing closing brace
+    }
 
 @app.get("/health")
 async def health_check():
@@ -97,12 +105,13 @@ async def health_check():
         "status": "healthy",
         "service": "ai-plagiarism-detector",
         "version": "2.0.0"
-    }  # 🔧 FIXED: Added missing closing brace
+    }
 
 @app.get("/status")
 async def get_status(auth: bool = Depends(verify_api_key)):
     """Get system status"""
     try:
+        _ensure_processor_initialized()
         status = processor.get_status()
         return status
     except Exception as e:
@@ -115,6 +124,8 @@ async def ingest_documents(
     auth: bool = Depends(verify_api_key)
 ):
     """Ingest multiple documents for similarity indexing"""
+    _ensure_processor_initialized()
+    
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
     
@@ -155,6 +166,8 @@ async def check_similarity(
 ):
     """Check document similarity against indexed documents"""
     try:
+        _ensure_processor_initialized()
+        
         # Read file content
         content = await file.read()
         
@@ -179,4 +192,4 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
         log_level="info"
-    )  # 🔧 FIXED: Added missing closing parenthesis
+    )
