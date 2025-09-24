@@ -2,6 +2,7 @@
 FastAPI backend for AI Plagiarism Detection System
 Provides REST API endpoints with API key authentication
 """
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,26 +49,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Security
-security = HTTPBearer()
+# Security - FIXED: Make HTTPBearer optional
+security = HTTPBearer(auto_error=False)  # 🔧 KEY FIX: auto_error=False
 
 def verify_api_key(
-    x_api_key: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None, alias="X-API-KEY"),  # 🔧 FIXED: Added alias
     authorization: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ):
     """Verify API key from X-API-KEY header or Authorization Bearer token"""
     api_key = None
     
+    # Check X-API-KEY header first
     if x_api_key:
         api_key = x_api_key
+    # Check Authorization Bearer token
     elif authorization and authorization.scheme.lower() == "bearer":
         api_key = authorization.credentials
     
+    # 🔧 FIXED: Proper error handling
+    if not api_key:
+        raise HTTPException(
+            status_code=403,  # 🔧 FIXED: 403 for missing auth
+            detail="Authentication required. Use X-API-KEY header or Authorization: Bearer token."
+        )
+    
     if api_key != API_KEY:
         raise HTTPException(
-            status_code=401, 
-            detail="Invalid API key. Use X-API-KEY header or Authorization: Bearer token."
+            status_code=403,  # 🔧 FIXED: 403 for invalid auth
+            detail="Invalid API key."
         )
+    
     return True
 
 @app.get("/")
@@ -108,7 +119,6 @@ async def ingest_documents(
         raise HTTPException(status_code=400, detail="No files provided")
     
     results = []
-    
     for file in files:
         try:
             # Read file content
@@ -129,7 +139,6 @@ async def ingest_documents(
                     "filename": file.filename,
                     "error": result["error"]
                 })
-                
         except Exception as e:
             logger.error(f"Error processing file {file.filename}: {e}")
             results.append({
@@ -156,7 +165,6 @@ async def check_similarity(
             raise HTTPException(status_code=400, detail=result["error"])
         
         return result
-        
     except HTTPException:
         raise
     except Exception as e:
