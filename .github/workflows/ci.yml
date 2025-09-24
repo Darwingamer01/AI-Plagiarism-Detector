@@ -1,0 +1,122 @@
+name: AI Plagiarism Detector CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  # Keep demo fallback out of code — define API_KEY in repo Secrets for CI
+  API_KEY: ${{ secrets.API_KEY }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Cache Hugging Face & Torch caches
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.cache/torch
+            ~/.cache/transformers
+          key: ${{ runner.os }}-hf-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-hf-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Optional: mark this step with timeout if model download stalls
+      - name: Pre-warm model (cache for tests)
+        run: |
+          python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -v --tb=short
+
+      - name: Test backend import
+        run: |
+          python -c "from apps.backend.main import app; print('Backend imports successfully')"
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build Docker image
+        run: |
+          docker build -t ai-plagiarism-detector:latest .
+
+      - name: Run container and wait for health (with retries)
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          set -e
+          docker run -d -p 8000:8000 --name test-container ai-plagiarism-detector:latest || (docker rm -f test-container || true; exit 1)
+          # wait & retry up to 60s for /health
+          for i in 1 2 3 4 5 6; do
+            echo "Checking health (attempt $i)..."
+            if curl -sS http://localhost:8000/health | grep -q '"status":"healthy"'; then
+              echo "Health OK"
+              break
+            fi
+            sleep 10
+          done
+          # test /status with API key (use secret)
+          if ! curl -sS -H "X-API-KEY: $API_KEY" http://localhost:8000/status | grep -q '"total_chunks"'; then
+            docker logs test-container || true
+            docker rm -f test-container || true
+            echo "Status endpoint failed" && exit 1
+          fi
+          # cleanup
+          docker stop test-container
+          docker rm test-container
+
+      - name: Login to Docker Hub
+        if: github.ref == 'refs/heads/main' && secrets.DOCKERHUB_USERNAME
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push to Docker Hub
+        if: github.ref == 'refs/heads/main' && secrets.DOCKERHUB_USERNAME
+        run: |
+          docker tag ai-plagiarism-detector:latest ${{ secrets.DOCKERHUB_USERNAME }}/ai-plagiarism-detector:latest
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/ai-plagiarism-detector:latest

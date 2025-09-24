@@ -1,4 +1,10 @@
+"""
+Sprint 2: Enhanced Streamlit Frontend with Dual Mode Support
+- Local Mode: Uses embedded DocumentProcessor (original functionality)
+- API Mode: Calls FastAPI backend when BACKEND_URL is set
+"""
 import streamlit as st
+import requests
 import numpy as np
 import json
 import os
@@ -8,6 +14,10 @@ import tempfile
 from typing import List, Dict, Any
 from datetime import datetime
 import re
+
+# API Configuration - NEW SPRINT 2 ADDITION
+BACKEND_URL = os.getenv("BACKEND_URL")
+API_KEY = os.getenv("API_KEY", "demo-secret")
 
 # Try FAISS, fallback to scikit-learn if FAISS fails on Windows
 FAISS_AVAILABLE = True
@@ -31,6 +41,79 @@ INDEX_FILE = os.path.join(DATA_DIR, "faiss.index")
 METADATA_FILE = os.path.join(DATA_DIR, "metadata.json")
 MAX_FILE_SIZE = 5_000_000  # 5MB limit
 
+# NEW: API Client Class for FastAPI Backend Communication
+class APIClient:
+    """Client for communicating with FastAPI backend"""
+    
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = base_url.rstrip('/')
+        self.api_key = api_key
+        self.headers = {"Authorization": f"Bearer {api_key}"}
+        self.timeout = 30
+    
+    def health_check(self):
+        """Check if backend is healthy"""
+        try:
+            response = requests.get(f"{self.base_url}/health", timeout=5)
+            return response.status_code == 200
+        except:
+            return False
+    
+    def get_status(self):
+        """Get system status from backend"""
+        try:
+            response = requests.get(
+                f"{self.base_url}/status",
+                headers=self.headers,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"❌ Backend connection failed: {e}")
+            return None
+    
+    def ingest_documents(self, files):
+        """Ingest documents via API"""
+        try:
+            files_data = []
+            for uploaded_file in files:
+                files_data.append(
+                    ('files', (uploaded_file.name, uploaded_file.getvalue(), 'text/plain'))
+                )
+            
+            response = requests.post(
+                f"{self.base_url}/ingest",
+                headers=self.headers,
+                files=files_data,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"❌ Ingestion failed: {e}")
+            return None
+    
+    def check_similarity(self, uploaded_file):
+        """Check similarity via API"""
+        try:
+            files_data = {
+                'file': (uploaded_file.name, uploaded_file.getvalue(), 'text/plain')
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/check",
+                headers=self.headers,
+                files=files_data,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"❌ Similarity check failed: {e}")
+            return None
+
+# Existing Classes (Preserved from your original file)
 class IndexWrapper:
     """Wrapper that uses FAISS if available, otherwise scikit-learn"""
     def __init__(self, dim):
@@ -268,19 +351,19 @@ class DocumentProcessor:
                         # No existing index, create new
                         self.create_new_index()
                         return
-                
+
                 with open(METADATA_FILE, 'r') as f:
                     self.metadata = json.load(f)
-                
+
                 # Validate consistency
                 if self.index.ntotal != len([k for k in self.metadata.keys() if k.isdigit()]):
                     st.warning("⚠️ Index/metadata size mismatch. Rebuilding index for safety.")
                     self.create_new_index()
                     return
-                
+
                 total_docs = len(set(chunk.get('doc_id', '') for chunk in self.metadata.values() if isinstance(chunk, dict)))
                 st.success(f"✅ Loaded index: {self.index.ntotal} chunks from {total_docs} documents")
-                
+
             except Exception as e:
                 st.warning(f"Could not load existing index: {e}")
                 self.create_new_index()
@@ -457,56 +540,94 @@ def main():
     )
     
     st.title("🔍 Automated Document Similarity & Plagiarism Detection")
+    st.markdown("**Sprint 2: Enhanced with API Mode Support**")
     st.markdown("---")
     
-    processor = get_processor()
-    
-    # System status in sidebar
+    # NEW: Mode Detection and Setup
+    if BACKEND_URL:
+        # API Mode
+        api_mode = True
+        api_client = APIClient(BACKEND_URL, API_KEY)
+    else:
+        # Local Mode
+        api_mode = False
+        processor = get_processor()
+
+    # Enhanced Sidebar with Mode Information
     with st.sidebar:
-        st.header("System Status")
-        if processor.index:
-            total_chunks = processor.index.ntotal
-            total_docs = len(set(
-                chunk.get('doc_id', '') 
-                for chunk in processor.metadata.values() 
-                if isinstance(chunk, dict) and 'doc_id' in chunk
-            ))
+        st.header("⚙️ System Configuration")
+        
+        # NEW: Mode Indicator
+        if api_mode:
+            st.success(f"🌐 **API Mode**")
+            st.info(f"**Backend:** {BACKEND_URL}")
+            st.info(f"**API Key:** {API_KEY[:8]}...")
             
-            st.metric("Documents Indexed", total_docs)
-            st.metric("Total Chunks", total_chunks)
-            st.metric("Similarity Threshold", f"{SIMILARITY_THRESHOLD:.2f}")
+            # Backend health check
+            if api_client.health_check():
+                st.success("✅ Backend Connected")
+                
+                # Get and display status
+                status = api_client.get_status()
+                if status:
+                    st.metric("📄 Total Documents", status.get("total_docs", 0))
+                    st.metric("📝 Total Chunks", status.get("total_chunks", 0))
+                    st.info(f"🧠 Backend: {status.get('backend', 'Unknown')}")
+                    st.info(f"🤖 Model: {status.get('model', 'Unknown')[:30]}...")
+                    total_chunks = status.get("total_chunks", 0)
+                    total_docs = status.get("total_docs", 0)
+            else:
+                st.error("❌ Backend Unavailable")
+                st.warning("Check backend is running at the URL above")
+                total_chunks = 0
+                total_docs = 0
+        else:
+            st.info("💻 **Local Mode**")
+            st.info("Using embedded processor")
             
-            # Show backend type
-            backend = "FAISS" if FAISS_AVAILABLE else "Scikit-learn"
-            st.info(f"Backend: {backend}")
+            # Local mode status
+            if processor.index:
+                total_chunks = processor.index.ntotal
+                total_docs = len(set(
+                    chunk.get('doc_id', '') 
+                    for chunk in processor.metadata.values() 
+                    if isinstance(chunk, dict) and 'doc_id' in chunk
+                ))
+                st.metric("Documents Indexed", total_docs)
+                st.metric("Total Chunks", total_chunks)
+                st.metric("Similarity Threshold", f"{SIMILARITY_THRESHOLD:.2f}")
+                
+                # Show backend type
+                backend = "FAISS" if FAISS_AVAILABLE else "Scikit-learn"
+                st.info(f"Backend: {backend}")
         
         st.header("System Info")
-        st.info("This prototype detects semantic similarity using embeddings. Results may include false positives/negatives and should not be used as legal proof of plagiarism.")
+        st.info("This system detects semantic similarity using embeddings. Results may include false positives/negatives and should not be used as legal proof of plagiarism.")
         
-        # CHATGPT FIX: Configurable thresholds
+        # Configuration (works in both modes)
         st.header("Configuration")
         similarity_threshold = st.slider(
-            "Similarity Threshold", 
-            min_value=0.70, 
-            max_value=0.95, 
-            value=SIMILARITY_THRESHOLD, 
+            "Similarity Threshold",
+            min_value=0.70,
+            max_value=0.95,
+            value=SIMILARITY_THRESHOLD,
             step=0.05,
             help="Higher = stricter plagiarism detection"
         )
-
+        
         plagiarism_threshold = st.slider(
-            "Plagiarism Risk Threshold",
+            "Plagiarism Risk Threshold", 
             min_value=0.1,
-            max_value=0.8, 
+            max_value=0.8,
             value=0.3,
             step=0.1,
             help="% of suspicious chunks to flag as HIGH risk"
         )
-
+        
         # Store in session state for use in similarity calculation
         st.session_state['similarity_threshold'] = similarity_threshold
         st.session_state['plagiarism_threshold'] = plagiarism_threshold
-    
+
     # Main tabs
     tab1, tab2, tab3 = st.tabs(["📤 Ingest Documents", "🔍 Check Similarity", "📊 Results"])
     
@@ -522,7 +643,7 @@ def main():
         )
         
         if uploaded_files:
-            # CHATGPT FIX: Quick size check before processing
+            # Quick size check before processing
             oversized_files = []
             for file in uploaded_files:
                 try:
@@ -535,32 +656,61 @@ def main():
                 st.error(f"Files too large (max {MAX_FILE_SIZE/1024/1024:.1f}MB): {', '.join(oversized_files)}")
             else:
                 if st.button("Ingest Documents", type="primary"):
-                    if not processor._model_loaded:
-                        with st.spinner("Loading AI model (first time only)..."):
-                            processor.load_model()
-                    
-                    progress_bar = st.progress(0)
-                    results = []
-                    
-                    for i, uploaded_file in enumerate(uploaded_files):
-                        with st.spinner(f"Processing {uploaded_file.name}..."):
-                            result = processor.ingest_document(uploaded_file)
-                            results.append(result)
+                    # NEW: API vs Local Mode Processing
+                    if api_mode:
+                        # API Mode
+                        with st.spinner("🌐 Processing documents via API..."):
+                            result = api_client.ingest_documents(uploaded_files)
+                            
+                            if result and "results" in result:
+                                st.success("✅ Documents ingested successfully!")
+                                
+                                for res in result["results"]:
+                                    if "error" in res:
+                                        st.error(f"❌ {res['filename']}: {res['error']}")
+                                    else:
+                                        st.success(
+                                            f"✅ {res['filename']}: "
+                                            f"{res['chunks_added']} chunks added "
+                                            f"(ID: {res['doc_id'][:12]}...)"
+                                        )
+                            else:
+                                st.error("❌ API ingestion failed")
+                    else:
+                        # Local Mode (Original Logic)
+                        if not processor._model_loaded:
+                            with st.spinner("Loading AI model (first time only)..."):
+                                processor.load_model()
+                        
+                        progress_bar = st.progress(0)
+                        results = []
+                        
+                        for i, uploaded_file in enumerate(uploaded_files):
+                            with st.spinner(f"Processing {uploaded_file.name}..."):
+                                result = processor.ingest_document(uploaded_file)
+                                results.append(result)
                             progress_bar.progress((i + 1) / len(uploaded_files))
-                    
-                    st.success("Ingestion complete!")
-                    
-                    for result in results:
-                        if result["success"]:
-                            st.success(f"✅ {result['filename']}: {result['chunks_added']} chunks added")
-                        else:
-                            st.error(f"❌ {result.get('filename', 'Unknown')}: {result['error']}")
+                        
+                        st.success("Ingestion complete!")
+                        for result in results:
+                            if result["success"]:
+                                st.success(f"✅ {result['filename']}: {result['chunks_added']} chunks added")
+                            else:
+                                st.error(f"❌ {result.get('filename', 'Unknown')}: {result['error']}")
     
     with tab2:
         st.header("Similarity Check")
         st.write("Upload a document to check for similarity with indexed documents")
         
-        if processor.index.ntotal == 0:
+        # Check if system has any documents
+        has_documents = False
+        if api_mode:
+            # For API mode, we'll check this when button is clicked
+            has_documents = True  # Assume true for now, will be checked in API call
+        else:
+            has_documents = processor.index.ntotal > 0
+        
+        if not has_documents and not api_mode:
             st.warning("⚠️ No documents in index. Please ingest documents first.")
         else:
             query_file = st.file_uploader(
@@ -571,12 +721,51 @@ def main():
             )
             
             if query_file:
-                # CHATGPT FIX: Quick size check
+                # Quick size check
                 try:
                     if len(query_file.getvalue()) > MAX_FILE_SIZE:
                         st.error(f"File too large ({len(query_file.getvalue())/1024/1024:.1f}MB). Max size: {MAX_FILE_SIZE/1024/1024:.1f}MB")
                     else:
                         if st.button("Check Similarity", type="primary"):
+                            # NEW: API vs Local Mode Processing
+                            if api_mode:
+                                # API Mode
+                                with st.spinner("🌐 Analyzing document via API..."):
+                                    results = api_client.check_similarity(query_file)
+                                    
+                                    if results and "error" not in results:
+                                        st.session_state['last_results'] = results
+                                        st.success("✅ Analysis complete! Check the Results tab.")
+                                    elif results and "error" in results:
+                                        st.error(f"❌ {results['error']}")
+                                    else:
+                                        st.error("❌ API similarity check failed")
+                            else:
+                                # Local Mode (Original Logic)
+                                if not processor._model_loaded:
+                                    with st.spinner("Loading AI model..."):
+                                        processor.load_model()
+                                
+                                with st.spinner("Analyzing document..."):
+                                    results = processor.check_similarity(query_file)
+                                
+                                if "error" in results:
+                                    st.error(results["error"])
+                                else:
+                                    st.session_state['last_results'] = results
+                                    st.success("✅ Analysis complete! Check the Results tab.")
+                except:
+                    if st.button("Check Similarity", type="primary"):
+                        # Fallback for file access issues
+                        if api_mode:
+                            with st.spinner("🌐 Analyzing document via API..."):
+                                results = api_client.check_similarity(query_file)
+                                if results and "error" not in results:
+                                    st.session_state['last_results'] = results
+                                    st.success("✅ Analysis complete! Check the Results tab.")
+                                else:
+                                    st.error("❌ Analysis failed")
+                        else:
                             if not processor._model_loaded:
                                 with st.spinner("Loading AI model..."):
                                     processor.load_model()
@@ -589,26 +778,33 @@ def main():
                             else:
                                 st.session_state['last_results'] = results
                                 st.success("✅ Analysis complete! Check the Results tab.")
-                except:
-                    if st.button("Check Similarity", type="primary"):
-                        if not processor._model_loaded:
-                            with st.spinner("Loading AI model..."):
-                                processor.load_model()
-                        
-                        with st.spinner("Analyzing document..."):
-                            results = processor.check_similarity(query_file)
-                        
-                        if "error" in results:
-                            st.error(results["error"])
-                        else:
-                            st.session_state['last_results'] = results
-                            st.success("✅ Analysis complete! Check the Results tab.")
-    
+
     with tab3:
         st.header("Analysis Results")
         
         if 'last_results' not in st.session_state:
             st.info("No analysis results yet. Run a similarity check first.")
+            
+            # Show sample documents for testing
+            st.subheader("📚 Sample Documents")
+            st.markdown("Use these sample documents to test the system:")
+            
+            sample_docs = [
+                ("original.txt", "Baseline document for similarity testing"),
+                ("similar.txt", "Paraphrased version - expect 85-95% similarity"), 
+                ("different.txt", "Control document - expect <15% similarity")
+            ]
+            
+            for filename, description in sample_docs:
+                filepath = f"sample_docs/{filename}"
+                if os.path.exists(filepath):
+                    with open(filepath, 'rb') as f:
+                        st.download_button(
+                            f"📄 {filename}",
+                            f.read(),
+                            filename,
+                            help=description
+                        )
         else:
             results = st.session_state['last_results']
             
@@ -619,20 +815,35 @@ def main():
                 st.metric("Document", results['query_filename'])
             
             with col2:
-                st.metric("Similarity Score", f"{results['aggregated_score']:.2%}")
+                score = results.get('aggregated_score', 0)
+                st.metric("Similarity Score", f"{score:.2%}")
             
             with col3:
                 risk_color = "inverse" if results['plagiarism_flag'] else "normal"
                 st.metric(
-                    "Plagiarism Risk", 
+                    "Plagiarism Risk",
                     "HIGH" if results['plagiarism_flag'] else "LOW",
                     delta_color=risk_color
                 )
             
             with col4:
                 st.metric(
-                    "Suspicious Chunks", 
+                    "Suspicious Chunks",
                     f"{results['high_similarity_chunks']}/{results['total_query_chunks']}"
+                )
+            
+            # Enhanced alert messages
+            if results['plagiarism_flag']:
+                st.error(
+                    f"🚨 **HIGH SIMILARITY DETECTED!** "
+                    f"This document shows {results['aggregated_score']:.1%} similarity to indexed content. "
+                    f"Manual review recommended."
+                )
+            else:
+                st.success(
+                    f"✅ **LOW SIMILARITY** "
+                    f"This document shows {results['aggregated_score']:.1%} similarity to indexed content. "
+                    f"Appears to be original content."
                 )
             
             st.markdown("---")
@@ -654,9 +865,9 @@ def main():
                                 with col_a:
                                     st.write("**Query Text:**")
                                     st.text_area(
-                                        "Query", 
-                                        match['query_text'], 
-                                        height=100, 
+                                        "Query",
+                                        match['query_text'],
+                                        height=100,
                                         key=f"query_{i}_{j}_{match['chunk_id']}",
                                         label_visibility="collapsed"
                                     )
@@ -664,14 +875,14 @@ def main():
                                 with col_b:
                                     st.write(f"**Matched Text (Score: {match['score']:.3f}):**")
                                     st.text_area(
-                                        "Match", 
-                                        match['matched_text'], 
-                                        height=100, 
+                                        "Match",
+                                        match['matched_text'],
+                                        height=100,
                                         key=f"match_{i}_{j}_{match['chunk_id']}",
                                         label_visibility="collapsed"
                                     )
                                 
-                                # CHATGPT FIX: Use dynamic threshold
+                                # Use dynamic threshold
                                 dynamic_threshold = st.session_state.get('similarity_threshold', SIMILARITY_THRESHOLD)
                                 if match['score'] >= dynamic_threshold:
                                     st.error("🚨 High similarity detected!")
@@ -681,6 +892,20 @@ def main():
                                 st.markdown("---")
             else:
                 st.info("No similar documents found.")
+    
+    # Enhanced Footer
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**🔍 AI Plagiarism Detector v2.0**")
+    with col2:
+        st.markdown("**🤖 Powered by Sentence Transformers**")
+    with col3:
+        if api_mode:
+            st.markdown(f"**🌐 API Mode:** {BACKEND_URL.split('://')[1]}")
+        else:
+            st.markdown("**💻 Local Mode**")
 
 if __name__ == "__main__":
     main()

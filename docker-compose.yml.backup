@@ -1,0 +1,56 @@
+
+services:
+  backend:
+    build:
+      context: .
+      target: production
+    ports:
+      - "8000:8000"
+    environment:
+      - API_KEY=demo-secret
+      - MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+      - DATA_DIR=/app/data
+      - SIMILARITY_THRESHOLD=0.88
+      - CHUNK_SIZE=300
+      - OVERLAP=50
+    volumes:
+      - ./data:/app/data
+      - ./apps:/app/apps
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: .
+      target: base
+    ports:
+      - "8501:8501"
+    environment:
+      - BACKEND_URL=http://backend:8000
+      - API_KEY=demo-secret
+    volumes:
+      - ./apps/frontend:/app/apps/frontend
+      - ./sample_docs:/app/sample_docs
+    command: streamlit run apps/frontend/demo_streamlit.py --server.address 0.0.0.0
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password
+    volumes:
+      - mongodb_data:/data/db
+    profiles:
+      - with-mongo
+
+volumes:
+  mongodb_data:
